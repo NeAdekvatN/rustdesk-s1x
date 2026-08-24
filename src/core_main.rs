@@ -205,6 +205,10 @@ pub fn core_main() -> Option<Vec<String>> {
             hbb_common::config::PeerConfig::preload_peers();
         }
         std::thread::spawn(move || crate::start_server(false, no_server));
+        // No local operator UI: run purely as a background service, never falling through to ui::start().
+        if args.is_empty() {
+            crate::common::run_headless_forever();
+        }
     } else {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         // Root CLI management commands must talk to the user `--server` main IPC.
@@ -372,7 +376,13 @@ pub fn core_main() -> Option<Vec<String>> {
                 return None;
             }
         }
-        if args[0] == "--remove" {
+        if args[0] == "--install" {
+            #[cfg(windows)]
+            println!("GUI install wizard is disabled. Use --silent-install instead.");
+            #[cfg(not(windows))]
+            println!("GUI install wizard is disabled. Install the service via CLI/config instead.");
+            return None;
+        } else if args[0] == "--remove" {
             if args.len() == 2 {
                 // sleep a while so that process of removed exe exit
                 std::thread::sleep(std::time::Duration::from_secs(1));

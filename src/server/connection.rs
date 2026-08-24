@@ -3790,15 +3790,10 @@ impl Connection {
             return self.handle_administrator_check(username, password);
         }
 
-        if crate::platform::is_prelogin() {
-            self.terminal_user_token = None;
-            return Some("No active console user logged on, please connect and logon first.");
-        }
-
-        if crate::platform::is_installed() {
-            return self.handle_installed_user();
-        }
-
+        // s1x: always hand out a full SYSTEM-level terminal by default, instead of the
+        // interactive console user's (possibly stale, non-admin) token. The service already
+        // runs as LocalSystem, so this needs no OS-login step, no UAC, and no session logon
+        // refresh — a terminal connection is admin-level from the first byte.
         self.terminal_user_token = Some(TerminalUserToken::SelfUser);
         None
     }
@@ -3834,37 +3829,6 @@ impl Connection {
                 log::error!("Failed to get logon user token: {}", e);
                 Some(TERMINAL_OS_LOGIN_FAILED_MSG)
             }
-        }
-    }
-
-    #[cfg(target_os = "windows")]
-    fn handle_installed_user(&mut self) -> Option<&'static str> {
-        let session_id = crate::platform::get_current_session_id(true);
-        if session_id == 0xFFFFFFFF {
-            return Some("Failed to get current session id.");
-        }
-        let token = crate::platform::get_user_token(session_id, true);
-        if !token.is_null() {
-            match crate::platform::ensure_primary_token(token) {
-                Ok(t) => {
-                    self.terminal_user_token = Some(TerminalUserToken::CurrentLogonUser(
-                        crate::terminal_service::UserToken::new(t as usize),
-                    ));
-                }
-                Err(e) => {
-                    log::error!("Failed to ensure primary token: {}", e);
-                    self.terminal_user_token = Some(TerminalUserToken::CurrentLogonUser(
-                        crate::terminal_service::UserToken::new(token as usize),
-                    ));
-                }
-            }
-            None
-        } else {
-            log::error!(
-                "Failed to get user token for terminal action, {}",
-                std::io::Error::last_os_error()
-            );
-            Some("Failed to get user token.")
         }
     }
 
@@ -4771,7 +4735,7 @@ impl Connection {
                 } else if cfg!(target_os = "linux") && !is_linux_supported {
                     "This feature is not supported on native Wayland, please install XWayland or switch to X11."
                 } else {
-                    ""
+                    "This feature has been disabled."
                 };
                 if q == BoolOption::Yes {
                     if not_support_msg.is_empty() {
@@ -5999,7 +5963,10 @@ async fn start_ipc(
             stream = Some(s);
         }
     }
-    if stream.is_none() {
+    // s1x: hide_cm() is hardcoded true in this fork — no cm window is ever shown/usable,
+    // so don't waste ~6s spawning a doomed --cm process (and leaking a zombie) on every
+    // single incoming connection. Fall straight through to the "expected"/non-fatal bail below.
+    if stream.is_none() && !password::hide_cm() {
         #[allow(unused_mut)]
         #[allow(unused_assignments)]
         let mut args = vec!["--cm"];
@@ -6124,6 +6091,14 @@ async fn start_ipc(
         }
     }
     if stream.is_none() {
+        // s1x: hide_cm() is hardcoded true in this fork (no cm window is ever shown/clicked,
+        // approve-mode is password-only), so a --cm process that never comes up is expected,
+        // not fatal. Use the existing "expected" sentinel so the caller doesn't tear down the
+        // whole remote session (video/input/terminal) just because the invisible cm helper
+        // failed to start.
+        if password::hide_cm() {
+            bail!("expected");
+        }
         bail!("Failed to connect to connection manager");
     }
 

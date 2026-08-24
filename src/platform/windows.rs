@@ -3274,7 +3274,7 @@ if exist \"{tray_shortcut}\" del /f /q \"{tray_shortcut}\"
         log::debug!("{err}");
         return true;
     }
-    run_after_run_cmds(false);
+    run_after_run_cmds(true);
     std::process::exit(0);
 }
 

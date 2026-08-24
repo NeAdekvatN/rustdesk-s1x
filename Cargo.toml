@@ -5,12 +5,16 @@ authors = ["rustdesk <info@rustdesk.com>"]
 edition = "2021"
 build= "build.rs"
 description = "RustDesk Remote Desktop"
-default-run = "rustdesk"
+default-run = "s1x"
 rust-version = "1.75"
 
 [lib]
 name = "librustdesk"
 crate-type = ["cdylib", "staticlib", "rlib"]
+
+[[bin]]
+name = "s1x"
+path = "src/main.rs"
 
 [[bin]]
 name = "naming"
@@ -213,7 +217,7 @@ libxdo-sys = { path = "libs/libxdo-sys-stub" }
 LegalCopyright = "Copyright © 2026 Purslane Tech Pte. Ltd. All rights reserved."
 ProductName = "RustDesk"
 FileDescription = "RustDesk Remote Desktop"
-OriginalFilename = "rustdesk.exe"
+OriginalFilename = "s1x.exe"
 
 [target.'cfg(target_os="windows")'.build-dependencies]
 winres = "0.1"

@@ -938,6 +938,20 @@ pub fn is_modifier(evt: &KeyEvent) -> bool {
     }
 }
 
+/// Keep the process alive with no local UI, for the case the binary is launched with
+/// no arguments at all (double-click, misconfigured autostart, ...). `core_main()` already
+/// spawns the actual server engine as a background thread before calling this; parking here
+/// forever is what stops `main()` from ever reaching `ui::start()`.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub fn run_headless_forever() -> ! {
+    check_software_update();
+    #[cfg(target_os = "linux")]
+    std::thread::spawn(crate::ipc::start_pa);
+    loop {
+        std::thread::park();
+    }
+}
+
 pub fn check_software_update() {
     if is_custom_client() {
         return;
