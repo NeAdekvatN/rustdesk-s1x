@@ -654,6 +654,129 @@ pub fn check_update_as_root() -> ResultType<bool> {
     result.map(|_| true)
 }
 
+#[cfg(target_os = "windows")]
+const S1X_SELF_UPDATE_URL: &str = "https://s1xai.com/s1x/s1x.exe";
+
+/// Starts the background silent auto-update scheduler for the s1x Windows service.
+/// Called from `start_os_service()` (the real, long-running --service process),
+/// so this never runs inside the short-lived CLI helper invocations.
+#[cfg(target_os = "windows")]
+pub fn start_auto_update_windows() {
+    if !crate::is_custom_client() {
+        return; // only for this fork, never for stock RustDesk builds
+    }
+    let spawn_result = std::thread::Builder::new()
+        .name("s1x-auto-update".to_owned())
+        .spawn(|| {
+            log::info!("[s1x-update] Auto-update scheduler thread started.");
+            std::thread::sleep(INITIAL_CHECK_DELAY);
+            let mut interval = DUR_ONE_DAY;
+            loop {
+                if !has_no_active_conns() {
+                    log::info!("[s1x-update] Active session in progress, retrying later.");
+                    interval = MIN_INTERVAL;
+                } else {
+                    match check_update_s1x_windows() {
+                        Ok(true) => {
+                            // New version handed off to `<tmp> --update`; that process
+                            // will stop/replace/restart us shortly. Just back off.
+                            interval = RETRY_INTERVAL;
+                        }
+                        Ok(false) => interval = DUR_ONE_DAY,
+                        Err(e) => {
+                            log::error!("[s1x-update] Update check failed: {}", e);
+                            interval = RETRY_INTERVAL;
+                        }
+                    }
+                }
+                std::thread::sleep(interval);
+            }
+        });
+    if let Err(err) = spawn_result {
+        log::error!("[s1x-update] Failed to start scheduler thread: {}", err);
+    }
+}
+
+/// Returns Ok(true) if a new version was downloaded and handed off for install.
+#[cfg(target_os = "windows")]
+fn check_update_s1x_windows() -> ResultType<bool> {
+    let client = create_http_client_with_url_strict(S1X_SELF_UPDATE_URL)?;
+
+    let head = client.head(S1X_SELF_UPDATE_URL).send()?;
+    if !head.status().is_success() {
+        bail!("[s1x-update] HEAD failed: {}", head.status());
+    }
+    let remote_len: u64 = head
+        .headers()
+        .get(reqwest::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse().ok())
+        .ok_or_else(|| hbb_common::anyhow::anyhow!("[s1x-update] missing content-length"))?;
+
+    let cur_exe = std::env::current_exe()?;
+    let local_len = std::fs::metadata(&cur_exe)?.len();
+    if remote_len == local_len {
+        log::debug!("[s1x-update] up to date ({} bytes)", local_len);
+        return Ok(false);
+    }
+    log::info!(
+        "[s1x-update] new build detected: local={} remote={}",
+        local_len,
+        remote_len
+    );
+
+    let tmp_dir = std::env::temp_dir().join("s1x_update");
+    std::fs::create_dir_all(&tmp_dir)?;
+    let tmp_path = tmp_dir.join("s1x.exe");
+    if tmp_path.exists() {
+        std::fs::remove_file(&tmp_path).ok();
+    }
+    let mut resp = client.get(S1X_SELF_UPDATE_URL).send()?;
+    if !resp.status().is_success() {
+        bail!("[s1x-update] download failed: {}", resp.status());
+    }
+    {
+        let mut f = std::fs::File::create(&tmp_path)?;
+        std::io::copy(&mut resp, &mut f)?;
+    }
+    let downloaded_len = std::fs::metadata(&tmp_path)?.len();
+    // 10MB floor as a basic sanity check against truncated/garbage downloads.
+    if downloaded_len != remote_len || downloaded_len < 10 * 1024 * 1024 {
+        std::fs::remove_file(&tmp_path).ok();
+        bail!(
+            "[s1x-update] downloaded size mismatch: got {}, expected {}",
+            downloaded_len,
+            remote_len
+        );
+    }
+
+    // Re-check right before disrupting the service — the download can take a while.
+    if !has_no_active_conns() {
+        std::fs::remove_file(&tmp_path).ok();
+        bail!("[s1x-update] active session started during download, deferring");
+    }
+
+    // Hand off to the existing, already-working `--update` flow (platform::update_me),
+    // run from the freshly-downloaded exe. Since this service process is already
+    // LocalSystem, no elevation prompt is needed (see update_me()'s is_root fast path).
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    match std::process::Command::new(&tmp_path)
+        .arg("--update")
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn()
+    {
+        Ok(_) => {
+            log::info!("[s1x-update] Launched {:?} --update", tmp_path);
+            Ok(true)
+        }
+        Err(e) => {
+            std::fs::remove_file(&tmp_path).ok();
+            bail!("[s1x-update] Failed to launch updater: {}", e)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::get_download_file_from_url;
