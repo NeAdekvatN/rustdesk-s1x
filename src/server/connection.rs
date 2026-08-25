@@ -5963,10 +5963,17 @@ async fn start_ipc(
             stream = Some(s);
         }
     }
-    // s1x: hide_cm() is hardcoded true in this fork — no cm window is ever shown/usable,
-    // so don't waste ~6s spawning a doomed --cm process (and leaking a zombie) on every
-    // single incoming connection. Fall straight through to the "expected"/non-fatal bail below.
-    if stream.is_none() && !password::hide_cm() {
+    // s1x: this fork previously skipped spawning `--cm` entirely whenever hide_cm() was true
+    // ("no cm window is ever shown/usable, don't bother"). That reasoning was wrong: file
+    // transfer, clipboard-file, and printer jobs are bridged through this same cm IPC socket
+    // (see send_to_cm/send_fs above), so skipping cm left those requests hanging forever with
+    // no consumer. Upstream already handles hide_cm() correctly on the cm side — src/ui.rs
+    // still spawns the full `--cm` window/behavior/IPC stack, it just collapses (hides) the
+    // window instead of showing it (see `frame.collapse(true)` there) — so just spawn `--cm`
+    // unconditionally like upstream and let that existing mechanism keep it invisible.
+    // (`--cm-no-ui` is not an option here: it's a no-op without the `flutter` feature, which
+    // this build does not enable — it ships the Sciter UI instead.)
+    if stream.is_none() {
         #[allow(unused_mut)]
         #[allow(unused_assignments)]
         let mut args = vec!["--cm"];
@@ -6091,11 +6098,12 @@ async fn start_ipc(
         }
     }
     if stream.is_none() {
-        // s1x: hide_cm() is hardcoded true in this fork (no cm window is ever shown/clicked,
-        // approve-mode is password-only), so a --cm process that never comes up is expected,
-        // not fatal. Use the existing "expected" sentinel so the caller doesn't tear down the
-        // whole remote session (video/input/terminal) just because the invisible cm helper
-        // failed to start.
+        // s1x: hide_cm() is hardcoded true in this fork. `--cm` is spawned above just like
+        // upstream and normally connects fine (its window is merely collapsed/hidden, see the
+        // comment above) — but on the off chance it still fails to come up (crash, missing
+        // sciter.dll, etc.), don't tear down the whole remote session (video/input/terminal)
+        // over the invisible cm helper; use the existing "expected" sentinel so the caller
+        // treats it as non-fatal instead.
         if password::hide_cm() {
             bail!("expected");
         }
