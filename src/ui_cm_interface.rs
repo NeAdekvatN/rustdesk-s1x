@@ -831,6 +831,74 @@ impl<T: InvokeUiCM> IpcTaskRunner<T> {
     }
 }
 
+// s1x: connection manager without any UI.
+//
+// The `_cm` ipc endpoint is what bridges file transfer, clipboard-file and printer requests
+// (see `send_to_cm`/`send_fs` in server/connection.rs), but in the Sciter build it is only
+// started from `SciterConnectionManager::new()` — that is, once Sciter has actually rendered
+// `cm.html` and attached the `connection-manager` behavior to it. This fork hardcodes
+// `hide_cm()` to true, so `ui::start` takes the `frame.collapse(true) + run_loop()` path and
+// the document is never realized: the `--cm` process runs, but never creates the `_cm` pipe,
+// so file transfer requests sit there forever with nobody on the other end. Verified on a
+// headless Windows host: `--cm` alive for minutes with only the `query`/`query_service` pipes
+// present and an empty remote file listing on the client.
+//
+// This runs the very same ipc server with a no-op ui handler, so it needs no window, no
+// desktop and no Sciter runtime at all. Upstream reaches the same place through `--cm-no-ui`,
+// which was previously flutter-only.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[derive(Clone)]
+pub struct NoUiHandler;
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+impl InvokeUiCM for NoUiHandler {
+    fn add_connection(&self, client: &Client) {
+        log::info!(
+            "cm(no ui): add connection {}, peer: {}, file transfer: {}, terminal: {}",
+            client.id,
+            client.peer_id,
+            client.is_file_transfer,
+            client.is_terminal
+        );
+    }
+
+    fn remove_connection(&self, id: i32, _close: bool) {
+        log::info!("cm(no ui): remove connection {}", id);
+        if get_clients_length() == 0 {
+            // Same as the Sciter handler: the last client leaving ends the process, so the
+            // next connection gets a fresh cm rather than a half-torn-down one.
+            quit_cm();
+            // `quit_cm()` exits through `quit_gui()`, which on Linux is `gtk_main_quit()` and
+            // does nothing here — there is no gtk loop in a headless cm. Exit explicitly,
+            // otherwise this process keeps owning `_cm` while no longer serving it.
+            #[cfg(all(target_os = "linux", not(feature = "flutter")))]
+            std::process::exit(0);
+        }
+    }
+
+    fn new_message(&self, _id: i32, _text: String) {}
+
+    fn change_theme(&self, _dark: String) {}
+
+    fn change_language(&self) {}
+
+    fn show_elevation(&self, _show: bool) {}
+
+    fn update_voice_call_state(&self, _client: &Client) {}
+
+    fn file_transfer_log(&self, _action: &str, _log: &str) {}
+}
+
+// Blocks until the ipc server is done, like the flutter `start_cm_no_ui`.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub fn start_cm_no_ui() {
+    #[cfg(target_os = "linux")]
+    std::thread::spawn(crate::ipc::start_pa);
+    start_ipc(ConnectionManager {
+        ui_handler: NoUiHandler,
+    });
+}
+
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tokio::main(flavor = "current_thread")]
 pub async fn start_ipc<T: InvokeUiCM>(cm: ConnectionManager<T>) {

@@ -727,11 +727,16 @@ pub fn core_main() -> Option<Vec<String>> {
             // meanwhile, return true to call flutter window to show control panel
             crate::ui_interface::start_option_status_sync();
         } else if args[0] == "--cm-no-ui" {
-            #[cfg(feature = "flutter")]
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
             {
                 crate::ui_interface::start_option_status_sync();
+                #[cfg(feature = "flutter")]
                 crate::flutter::connection_manager::start_cm_no_ui();
+                // s1x: this used to be a no-op without the `flutter` feature, which left the
+                // Sciter build with no way to run a connection manager that does not need a
+                // window — and therefore no working `_cm` ipc endpoint on a headless host.
+                #[cfg(not(feature = "flutter"))]
+                crate::ui_cm_interface::start_cm_no_ui();
             }
             return None;
         } else if args[0] == "--whiteboard" {

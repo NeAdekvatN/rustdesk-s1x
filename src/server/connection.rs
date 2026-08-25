@@ -5963,20 +5963,30 @@ async fn start_ipc(
             stream = Some(s);
         }
     }
-    // s1x: this fork previously skipped spawning `--cm` entirely whenever hide_cm() was true
-    // ("no cm window is ever shown/usable, don't bother"). That reasoning was wrong: file
-    // transfer, clipboard-file, and printer jobs are bridged through this same cm IPC socket
-    // (see send_to_cm/send_fs above), so skipping cm left those requests hanging forever with
-    // no consumer. Upstream already handles hide_cm() correctly on the cm side — src/ui.rs
-    // still spawns the full `--cm` window/behavior/IPC stack, it just collapses (hides) the
-    // window instead of showing it (see `frame.collapse(true)` there) — so just spawn `--cm`
-    // unconditionally like upstream and let that existing mechanism keep it invisible.
-    // (`--cm-no-ui` is not an option here: it's a no-op without the `flutter` feature, which
-    // this build does not enable — it ships the Sciter UI instead.)
+    // s1x: file transfer, clipboard-file and printer jobs are bridged through this cm IPC
+    // socket (see send_to_cm/send_fs above), so a cm that is not listening on `_cm` leaves all
+    // of them hanging with no consumer.
+    //
+    // Spawning `--cm` is not enough to get that endpoint when the window is hidden: in the
+    // Sciter build the `_cm` server is started from `SciterConnectionManager::new()`, which
+    // Sciter only constructs once it has rendered `cm.html` and attached the
+    // `connection-manager` behavior to it. `hide_cm()` is hardcoded true in this fork, so
+    // `ui::start` takes the `frame.collapse(true) + run_loop()` path, the document is never
+    // realized, and the `--cm` process runs forever without ever creating the pipe (verified
+    // on a headless Windows host: `--cm` alive for minutes, only `query`/`query_service`
+    // pipes present, remote file listing empty on the client).
+    //
+    // So when the cm window is hidden anyway, spawn `--cm-no-ui`, which runs the same ipc
+    // server with a no-op ui handler (ui_cm_interface::start_cm_no_ui) and needs no window,
+    // no desktop and no Sciter runtime. `--cm` is still used when a visible cm is wanted.
     if stream.is_none() {
         #[allow(unused_mut)]
         #[allow(unused_assignments)]
-        let mut args = vec!["--cm"];
+        let mut args = if password::hide_cm() {
+            vec!["--cm-no-ui"]
+        } else {
+            vec!["--cm"]
+        };
         #[allow(unused_mut)]
         #[cfg(target_os = "linux")]
         let mut user = None;
@@ -6098,13 +6108,15 @@ async fn start_ipc(
         }
     }
     if stream.is_none() {
-        // s1x: hide_cm() is hardcoded true in this fork. `--cm` is spawned above just like
-        // upstream and normally connects fine (its window is merely collapsed/hidden, see the
-        // comment above) — but on the off chance it still fails to come up (crash, missing
-        // sciter.dll, etc.), don't tear down the whole remote session (video/input/terminal)
-        // over the invisible cm helper; use the existing "expected" sentinel so the caller
-        // treats it as non-fatal instead.
+        // s1x: hide_cm() is hardcoded true in this fork, so the cm spawned above is the
+        // windowless `--cm-no-ui` one, which normally comes up fine. On the off chance it
+        // still fails (crash, spawn denied), don't tear down the whole remote session
+        // (video/input/terminal) over the invisible cm helper; use the existing "expected"
+        // sentinel so the caller treats it as non-fatal instead. Note this also means a
+        // broken cm shows up as silently missing file transfer rather than a failed
+        // connection, so check the log for the warning from try_start_cm_ipc.
         if password::hide_cm() {
+            log::warn!("no cm ipc endpoint, file transfer/clipboard-file/printer won't work");
             bail!("expected");
         }
         bail!("Failed to connect to connection manager");
