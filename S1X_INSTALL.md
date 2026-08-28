@@ -1,25 +1,33 @@
 # s1x — Installation & Configuration Guide
 
-`s1x` is a private, headless build of RustDesk. The remote-desktop engine is
-unchanged; the difference is that this build shows **no interface at all** —
-no main window, no tray icon, no connection-manager popup, no install
-wizard. It is meant to run silently as a background service and be
-configured entirely through its config file and CLI flags.
+`s1x` is a headless, **unattended-access** build of RustDesk for machines you
+own or administer remotely — servers, VMs, and workstations in your own fleet
+where nobody is sitting at the keyboard to click through dialogs. The
+remote-desktop engine is unchanged from upstream RustDesk; the only difference
+is that this build runs as a background service with no local UI (no main
+window, tray icon, connection-manager popup, or setup wizard) and is
+configured entirely through its config file and CLI flags. This is the same
+model as "unattended access" in TeamViewer / AnyDesk.
+
+> **Intended use.** Deploy this only on endpoints you own or are authorized to
+> administer. Because it authenticates unattended (by a fixed password, with no
+> on-screen approval step), it is meant for your own infrastructure, not for
+> machines where another person would need to consent to each session.
 
 ## Contents of this repo
 
 | File | Purpose |
 |---|---|
 | `s1x.exe` | Main binary (client, server, service — one executable) |
-| `sciter.dll` | Required UI runtime dependency. Must sit next to `s1x.exe` even though the local UI is disabled — the binary still links it and will fail to start without it. |
+| `sciter.dll` | UI runtime dependency. Must sit next to `s1x.exe` even though the local UI is disabled — the binary still links it and won't start without it. |
 | `S1X_INSTALL.md` | This guide |
 
 ## 1. Install
 
-Copy `s1x.exe` and `sciter.dll` into the same folder (either run it portable
-from there, or install it as a Windows service — see below).
+Copy `s1x.exe` and `sciter.dll` into the same folder — run it portable from
+there, or install it as a Windows service (see below).
 
-### Option A — Silent install as a Windows service (recommended)
+### Option A — Unattended install as a Windows service (recommended)
 
 Run from an elevated (Administrator) command prompt:
 
@@ -27,9 +35,10 @@ Run from an elevated (Administrator) command prompt:
 s1x.exe --silent-install
 ```
 
-This installs the app under Program Files, registers the background
-service, and does **not** show any wizard or dialog (a toast notification
-reporting success/failure is the only visible artifact).
+This installs the app under Program Files and registers the background
+service without an interactive wizard — a toast notification reports whether
+it succeeded or failed. The non-interactive flow is what lets you roll it out
+by script across several of your own machines.
 
 To remove it later:
 
@@ -47,17 +56,16 @@ s1x.exe --install-service
 s1x.exe --uninstall-service
 ```
 
-### Just running it directly
+### Running it directly
 
-Double-clicking `s1x.exe` or running it with no arguments does **not** open
-any window — it silently starts the background server and parks. This is
-intentional in this fork (upstream RustDesk would normally show the main
-window here).
+Running `s1x.exe` with no arguments starts the background server and parks.
+No window opens, because this build has no host-side UI (upstream RustDesk
+would show the main window here). Use the CLI and config file to manage it.
 
 ## 2. Configure
 
-All configuration is done via the config file or CLI — there is no settings
-UI to open.
+All configuration is done through the config file or CLI — this build has no
+settings window.
 
 ### Config file location
 
@@ -66,33 +74,30 @@ UI to open.
 %APPDATA%\s1x\config\s1x2.toml     (options: password, approve-mode, etc.)
 ```
 
-You can hand-edit these while the service is stopped, or use the CLI
-(below) while it's running — the CLI talks to the running instance over
-IPC and requires the app to be **installed** and the shell to be
-**elevated/root**.
+Hand-edit these while the service is stopped, or use the CLI (below) while
+it's running — the CLI talks to the running instance over IPC and requires
+the app to be **installed** and the shell to be **elevated/root**.
 
-### Set a permanent password (do this first)
+### Set an access password (do this first)
 
 ```
 s1x.exe --password "your-strong-password"
 ```
 
-### ⚠️ Required setting: password-only approval
+### Required setting: password-based (unattended) approval
 
-This build hard-disables the connection-manager popup (`--cm`), which is
-what upstream RustDesk normally pops up on the host to let a human
-click "Accept" for an incoming connection. In this fork **that window can
-never appear**, so if approval mode is left at anything that expects a
-click, incoming connections will simply hang forever with nothing to
-click.
-
-You must set approval mode to permanent-password-only:
+Because this is an unattended build, there is no local operator to click
+"Accept" on an incoming session, so the connection-manager popup (`--cm`) that
+upstream RustDesk shows is disabled. Approval is therefore handled
+automatically by the access password you set above:
 
 ```
 s1x.exe --option approve-mode password
 ```
 
-Do not set `approve-mode` to `click` or `both` on this build.
+Leave `approve-mode` at `password`. Don't use `click` or `both` on this
+build — those modes wait for a local click that can't happen on a headless
+machine, so incoming sessions would just hang.
 
 ### Other useful options
 
@@ -104,8 +109,8 @@ s1x.exe --option <key> <value>            Set any option key (see libs/hbb_commo
 
 ### Using it as an outgoing viewer
 
-Even though the host side has no UI, you can still use this machine to
-*look at* another machine — that viewer window is intentionally kept:
+The host side has no UI, but you can still use this machine to connect out to
+another one — the viewer window is kept:
 
 ```
 s1x.exe --connect <remote-id>
@@ -113,8 +118,9 @@ s1x.exe --connect <remote-id>
 
 ## 3. Notes / limitations of this fork
 
-- No tray icon will ever appear, even if config asks for one.
-- No install wizard — only `--silent-install` / `--silent-install debug`.
-- The "show my cursor" whiteboard overlay feature is disabled host-side.
-- `approve-mode` **must** be `password`. There is no way to manually
-  approve a connection on this machine once installed.
+- No tray icon, even if the config requests one.
+- No interactive install wizard — use `--silent-install` (or
+  `--silent-install debug` for verbose output).
+- The "show my cursor" whiteboard overlay is disabled host-side.
+- `approve-mode` must be `password`: unattended endpoints authenticate by
+  password rather than by an on-screen prompt.
